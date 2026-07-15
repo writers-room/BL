@@ -452,34 +452,56 @@
     }
     if (!joinTs) joinTs = Date.now() - 1200;
 
-    // ✅ [벨사탕] 입장 히스토리 표시 여부: 관리자가 chatMeta/showHistory 로 ON/OFF (기본 ON)
+    // ✅ [벨사탕] 입장 히스토리: mode(on/admin/off) + count(개수), 관리자가 설정
     let showHist = true;
+    let histCount = 100;
     try {
       const hs = await db.ref("chatMeta/showHistory").once("value");
-      showHist = (hs.val()?.enabled !== false);
+      const conf = hs.val() || {};
+      const mode = conf.mode || (conf.enabled === false ? "off" : "on");
+      const isAdminNow = sessionStorage.getItem("adminPinOk") === "true";
+      showHist = (mode === "on") || (mode === "admin" && isAdminNow);
+      histCount = Math.max(10, Math.min(300, parseInt(conf.count ?? 100, 10) || 100));
     } catch(e) {}
 
     // ✅ [벨사탕] 최근 100개는 새 입장자에게도 렌더 (OFF면 키만 등록해 중복 방지)
-    const initSnap = await _msgRef.limitToLast(100).once("value");
+    // [FIX] limitToLast는 키 순서라 sys_pomo_* 같은 이름 키가 몰려 나옴 → time 기준 정렬로 변경
+    // [FIX] 히스토리에는 실제 대화만 표시 (뽀모/입장/퇴장/이펙트 시스템 메시지는 제외)
+    const initSnap = await _msgRef.orderByChild("time").limitToLast(Math.max(histCount, 100)).once("value");
     const box = document.getElementById("chat-box");
+    const histItems = [];
     initSnap.forEach(child => {
       const key = child.key;
+      const data = child.val();
       if (!key) return;
       _seenMsgKeys.add(key);
-      if (showHist) window.renderChatMessage?.(box, child.val(), key);
+      if (!data) return;
+      const t = data.type;
+      const isRealChat = !t || t === "declaration" || t === "fortune";
+      if (isRealChat) histItems.push([key, data]);
     });
+    if (showHist) {
+      histItems.slice(-histCount).forEach(([key, data]) => {
+        window.renderChatMessage?.(box, data, key);
+      });
+    }
 
     // ✅ 관리자 토글 버튼 라벨 실시간 동기화
     try {
       if (!window._histLabelRef) {
         window._histLabelRef = db.ref("chatMeta/showHistory");
         window._histLabelRef.on("value", snap => {
-          const on = snap.val()?.enabled !== false;
-          window._historyVisibleCache = on;
+          const conf = snap.val() || {};
+          const mode = conf.mode || (conf.enabled === false ? "off" : "on");
+          const count = Math.max(10, Math.min(300, parseInt(conf.count ?? 100, 10) || 100));
+          window._historyConfCache = { mode, count };
           const btn = document.getElementById("admin-history-btn");
-          if (btn) btn.textContent = on
-            ? "🕘 입장 히스토리: ON (누르면 끄기)"
-            : "🙈 입장 히스토리: OFF (누르면 켜기)";
+          if (btn) btn.textContent =
+            mode === "on"    ? `🕘 히스토리: 전체 공개 (${count}개)` :
+            mode === "admin" ? `🛡️ 히스토리: 관리자만 (${count}개)` :
+                               "🙈 히스토리: 숨김";
+          const cbtn = document.getElementById("admin-history-count-btn");
+          if (cbtn) cbtn.textContent = `🔢 표시 개수 설정 (현재 ${count}개)`;
         });
       }
     } catch(e) {}
@@ -536,19 +558,49 @@
 
   async function toggleChatHistoryVisible() {
     if (!requireAdminPin()) return;
-    let cur = true;
+    let conf = {};
     try {
       const snap = await db.ref("chatMeta/showHistory").once("value");
-      cur = (snap.val()?.enabled !== false);
+      conf = snap.val() || {};
     } catch(e) {}
+    const cur = conf.mode || (conf.enabled === false ? "off" : "on");
+    const next = cur === "on" ? "admin" : cur === "admin" ? "off" : "on";
+    const count = Math.max(10, Math.min(300, parseInt(conf.count ?? 100, 10) || 100));
+
     await db.ref("chatMeta/showHistory").set({
-      enabled: !cur,
+      mode: next,
+      count,
       updatedBy: myNick || "admin",
       at: Date.now()
     });
-    alert(!cur
-      ? "🕘 이제 새로 입장하는 분에게 최근 대화 100개가 보여요."
-      : "🙈 이제 새로 입장하는 분에게 이전 대화가 보이지 않아요.");
+    alert(
+      next === "on"    ? "🕘 히스토리: 전체 공개 — 모든 입장자에게 이전 대화가 보여요." :
+      next === "admin" ? "🛡️ 히스토리: 관리자만 — 관리자로 로그인한 사람만 이전 대화가 보여요." :
+                         "🙈 히스토리: 숨김 — 아무에게도 이전 대화가 보이지 않아요.");
+  }
+
+  async function setHistoryCount() {
+    if (!requireAdminPin()) return;
+    let conf = {};
+    try {
+      const snap = await db.ref("chatMeta/showHistory").once("value");
+      conf = snap.val() || {};
+    } catch(e) {}
+    const curCount = Math.max(10, Math.min(300, parseInt(conf.count ?? 100, 10) || 100));
+    const input = prompt("입장 시 보여줄 이전 대화 개수 (10~300)", String(curCount));
+    if (input === null) return;
+    const n = parseInt(input, 10);
+    if (!Number.isFinite(n) || n < 10 || n > 300) {
+      alert("10에서 300 사이의 숫자를 입력해 주세요!");
+      return;
+    }
+    await db.ref("chatMeta/showHistory").set({
+      mode: conf.mode || (conf.enabled === false ? "off" : "on"),
+      count: n,
+      updatedBy: myNick || "admin",
+      at: Date.now()
+    });
+    alert(`🔢 히스토리 표시 개수가 ${n}개로 설정됐어요.`);
   }
 
   // =====================================================
@@ -558,8 +610,12 @@
     if (!myNick) return;
     const day = ymd(Date.now());
     try {
-      await db.ref(`attendance/${day}/${myNick}`).set({
+      const aref = db.ref(`attendance/${day}/${myNick}`);
+      const prevSnap = await aref.once("value");
+      const prev = prevSnap.val();
+      await aref.set({
         emoji: myEmoji || "",
+        firstAt: prev?.firstAt || prev?.at || Date.now(),
         at: Date.now()
       });
       // 7일 지난 기록 정리
@@ -571,20 +627,62 @@
     } catch(e) { console.warn("[recordAttendance failed]", e); }
   }
 
+  function _closeAttendanceModal() {
+    document.getElementById("attendance-modal")?.remove();
+  }
+
   async function showAttendanceLog() {
     if (!requireAdminPin()) return;
     try {
       const snap = await db.ref("attendance").once("value");
       const v = snap.val() || {};
       const days = Object.keys(v).sort().reverse();
-      if (!days.length) { alert("아직 접속 기록이 없어요!"); return; }
-      const lines = days.map(d => {
-        const rows = v[d] || {};
-        const nicks = Object.keys(rows).map(n => `${rows[n]?.emoji || ""} ${n}`.trim());
-        return `📅 ${d} — ${nicks.length}명\n   ${nicks.join(", ")}`;
-      });
-      alert("📋 최근 7일 접속 기록\n\n" + lines.join("\n\n"));
+
+      let body;
+      if (!days.length) {
+        body = `<div class="hint" style="text-align:center;padding:20px 0;">아직 접속 기록이 없어요!</div>`;
+      } else {
+        body = days.map(d => {
+          const rows = v[d] || {};
+          const nicks = Object.keys(rows).sort((a, b) =>
+            (rows[a]?.firstAt || 0) - (rows[b]?.firstAt || 0));
+          const items = nicks.map(n => {
+            const r = rows[n] || {};
+            const first = r.firstAt || r.at;
+            return `
+              <div style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px dashed var(--border);">
+                <span style="font-size:17px;flex:0 0 auto;">${r.emoji || "✍️"}</span>
+                <span style="flex:1;font-weight:900;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(n)}</span>
+                <span style="flex:0 0 auto;font-size:12px;font-weight:800;color:var(--sub-muted);">첫 접속 ${first ? formatHHMM(first) : "-"}</span>
+              </div>`;
+          }).join("");
+          return `
+            <div class="set-block" style="margin-bottom:10px;">
+              <div class="set-title" style="display:flex;justify-content:space-between;align-items:center;">
+                <span>📅 ${escapeHtml(d)}</span>
+                <span style="font-size:12px;color:var(--sub-muted);font-weight:900;">${nicks.length}명</span>
+              </div>
+              ${items}
+            </div>`;
+        }).join("");
+      }
+
+      _closeAttendanceModal();
+      const overlay = document.createElement("div");
+      overlay.id = "attendance-modal";
+      overlay.style.cssText = "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:7000;background:rgba(0,0,0,.55);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);";
+      overlay.innerHTML = `
+        <div class="modal-content" style="max-height:calc(100vh - 60px);display:flex;flex-direction:column;width:min(440px, calc(100vw - 32px));">
+          <div class="modal-title">📋 접속 기록</div>
+          <div class="modal-sub">최근 7일 · 날짜별 접속한 작가님과 첫 접속 시각이에요.</div>
+          <div style="flex:1;overflow:auto;min-height:0;">${body}</div>
+          <div style="height:10px;"></div>
+          <button class="ghost-btn" style="width:100%;" onclick="document.getElementById('attendance-modal').remove()">닫기</button>
+        </div>`;
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) _closeAttendanceModal(); });
+      document.body.appendChild(overlay);
     } catch(e) {
+      console.warn("[showAttendanceLog failed]", e);
       alert("접속 기록을 불러오지 못했어요 😢");
     }
   }
@@ -610,6 +708,7 @@
   window.requireAdminPin = requireAdminPin;
   window.clearAllChat = clearAllChat;
   window.toggleChatHistoryVisible = toggleChatHistoryVisible;
+  window.setHistoryCount = setHistoryCount;
   window.recordAttendance = recordAttendance;
   window.showAttendanceLog = showAttendanceLog;
   window.updateChatHeader = updateChatHeader;

@@ -165,8 +165,11 @@
               <div>
                 <div class="set-title">🕘 입장 시 이전 대화 표시</div>
                 <button id="admin-history-btn" class="ghost-btn" type="button" style="width:100%;"
-                  onclick="toggleChatHistoryVisible()">🕘 입장 히스토리 ON/OFF</button>
-                <div class="hint">ON이면 새로 입장한 작가님에게 최근 대화 100개가 보여요.</div>
+                  onclick="toggleChatHistoryVisible()">🕘 히스토리 모드 전환</button>
+                <div style="height:8px;"></div>
+                <button id="admin-history-count-btn" class="ghost-btn" type="button" style="width:100%;"
+                  onclick="setHistoryCount()">🔢 표시 개수 설정</button>
+                <div class="hint">모드는 [전체 공개 → 관리자만 → 숨김] 순으로 바뀌어요. 개수는 10~300개까지 설정할 수 있어요.</div>
               </div>
 
               <!-- 접속 기록 -->

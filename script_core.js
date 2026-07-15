@@ -270,6 +270,7 @@
       window.addEventListener("beforeunload", _handleBeforeUnload, { once: true });
       await _writeJoinSystemMessageOnce();
 
+      callIfFn("recordAttendance");
       callIfFn("loadPersonalData");
       callIfFn("updateStatus", true);
       callIfFn("listenStatus");

@@ -452,13 +452,37 @@
     }
     if (!joinTs) joinTs = Date.now() - 1200;
 
-    // ✅ 신규 입장자는 이전 대화 일체 표시 안 함
-    // 과거 메시지 키만 seenMsgKeys에 등록해서 중복 방지만 처리
-    const initSnap = await _msgRef.limitToLast(80).once("value");
+    // ✅ [벨사탕] 입장 히스토리 표시 여부: 관리자가 chatMeta/showHistory 로 ON/OFF (기본 ON)
+    let showHist = true;
+    try {
+      const hs = await db.ref("chatMeta/showHistory").once("value");
+      showHist = (hs.val()?.enabled !== false);
+    } catch(e) {}
+
+    // ✅ [벨사탕] 최근 100개는 새 입장자에게도 렌더 (OFF면 키만 등록해 중복 방지)
+    const initSnap = await _msgRef.limitToLast(100).once("value");
+    const box = document.getElementById("chat-box");
     initSnap.forEach(child => {
       const key = child.key;
-      if (key) _seenMsgKeys.add(key);  // 렌더는 안 하고 키만 등록
+      if (!key) return;
+      _seenMsgKeys.add(key);
+      if (showHist) window.renderChatMessage?.(box, child.val(), key);
     });
+
+    // ✅ 관리자 토글 버튼 라벨 실시간 동기화
+    try {
+      if (!window._histLabelRef) {
+        window._histLabelRef = db.ref("chatMeta/showHistory");
+        window._histLabelRef.on("value", snap => {
+          const on = snap.val()?.enabled !== false;
+          window._historyVisibleCache = on;
+          const btn = document.getElementById("admin-history-btn");
+          if (btn) btn.textContent = on
+            ? "🕘 입장 히스토리: ON (누르면 끄기)"
+            : "🙈 입장 히스토리: OFF (누르면 켜기)";
+        });
+      }
+    } catch(e) {}
 
     window.scrollChatToBottom?.(true);
 
@@ -510,6 +534,61 @@
     return false;
   }
 
+  async function toggleChatHistoryVisible() {
+    if (!requireAdminPin()) return;
+    let cur = true;
+    try {
+      const snap = await db.ref("chatMeta/showHistory").once("value");
+      cur = (snap.val()?.enabled !== false);
+    } catch(e) {}
+    await db.ref("chatMeta/showHistory").set({
+      enabled: !cur,
+      updatedBy: myNick || "admin",
+      at: Date.now()
+    });
+    alert(!cur
+      ? "🕘 이제 새로 입장하는 분에게 최근 대화 100개가 보여요."
+      : "🙈 이제 새로 입장하는 분에게 이전 대화가 보이지 않아요.");
+  }
+
+  // =====================================================
+  // ✅ [벨사탕] 접속 기록 (최근 7일 보관)
+  // =====================================================
+  async function recordAttendance() {
+    if (!myNick) return;
+    const day = ymd(Date.now());
+    try {
+      await db.ref(`attendance/${day}/${myNick}`).set({
+        emoji: myEmoji || "",
+        at: Date.now()
+      });
+      // 7일 지난 기록 정리
+      const snap = await db.ref("attendance").once("value");
+      const cutoff = ymd(Date.now() - 6 * 86400000);
+      const updates = {};
+      snap.forEach(c => { if (c.key && c.key < cutoff) updates[c.key] = null; });
+      if (Object.keys(updates).length) await db.ref("attendance").update(updates);
+    } catch(e) { console.warn("[recordAttendance failed]", e); }
+  }
+
+  async function showAttendanceLog() {
+    if (!requireAdminPin()) return;
+    try {
+      const snap = await db.ref("attendance").once("value");
+      const v = snap.val() || {};
+      const days = Object.keys(v).sort().reverse();
+      if (!days.length) { alert("아직 접속 기록이 없어요!"); return; }
+      const lines = days.map(d => {
+        const rows = v[d] || {};
+        const nicks = Object.keys(rows).map(n => `${rows[n]?.emoji || ""} ${n}`.trim());
+        return `📅 ${d} — ${nicks.length}명\n   ${nicks.join(", ")}`;
+      });
+      alert("📋 최근 7일 접속 기록\n\n" + lines.join("\n\n"));
+    } catch(e) {
+      alert("접속 기록을 불러오지 못했어요 😢");
+    }
+  }
+
   async function clearAllChat() {
     if (!requireAdminPin()) return;
     if (!confirm("정말 채팅을 모두 삭제할까요? (되돌릴 수 없어요!)")) return;
@@ -530,4 +609,7 @@
   window.stopPomodoro = stopPomodoro;
   window.requireAdminPin = requireAdminPin;
   window.clearAllChat = clearAllChat;
+  window.toggleChatHistoryVisible = toggleChatHistoryVisible;
+  window.recordAttendance = recordAttendance;
+  window.showAttendanceLog = showAttendanceLog;
   window.updateChatHeader = updateChatHeader;
